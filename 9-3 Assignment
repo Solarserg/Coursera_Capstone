@@ -1,0 +1,426 @@
+#!/usr/bin/env python
+# coding: utf-8
+
+# ### Install libraries for scraping
+
+# In[1]:
+
+
+conda install -c anaconda beautifulsoup4
+
+
+# In[2]:
+
+
+from bs4 import BeautifulSoup
+import requests
+import pandas as pd
+import numpy as np
+
+
+# In[3]:
+
+
+pip install lxml
+
+
+# ### scrape data from wikipedia
+
+# In[4]:
+
+
+wiki_url = "https://en.wikipedia.org/wiki/List_of_postal_codes_of_Canada:_M"
+
+
+# In[5]:
+
+
+#make the soup
+response = requests.get(wiki_url)
+soup = BeautifulSoup(response.text, 'html.parser')
+print(soup)
+
+
+# In[6]:
+
+
+#find table from soup
+canada_zip = soup.find('table', attrs={'class' : "wikitable sortable"})
+canada_zip
+
+
+# ### read into pd df and get rid of "Not assigned" values
+
+# In[7]:
+
+
+#read soup table into pandas DataFrame
+df = pd.read_html(str(canada_zip))[0]
+df.sort_values(by=['Postal Code'])
+df.head(20)
+
+
+# In[8]:
+
+
+#make new df that excludes all rows with value of 'Not assigned' in column Borough, reset index
+df = df[df.Borough != 'Not assigned']
+df = df.reset_index(drop=True)
+df.sort_values(by=['Postal Code'])
+df.head(20)
+df.shape
+
+
+# ### get geo coordinates and add new columns to df
+
+# In[9]:
+
+
+# df from csv with postal code, lat, long
+csv_path = 'http://cocl.us/Geospatial_data'
+df2 = pd.read_csv(csv_path)
+df2.sort_values(by=['Postal Code'])
+
+
+# In[12]:
+
+
+#concatate dataframes
+df3 = pd.concat([df,df2])
+df3
+
+
+# In[13]:
+
+
+#groupby dataframes by postal code and aggregate while replacing all NaN values, and reset index
+df3 = df3.groupby(['Postal Code'], sort = False).agg(lambda x: np.nan if x.isnull().all() else x.dropna())
+df3 = df3.reset_index()
+df3
+
+
+# ### Import libraries for mapping and clustering
+
+# In[14]:
+
+
+import numpy as np # library to handle data in a vectorized manner
+
+import pandas as pd # library for data analsysis
+pd.set_option('display.max_columns', None)
+pd.set_option('display.max_rows', None)
+
+import json # library to handle JSON files
+
+get_ipython().system("conda install -c conda-forge geopy --yes # uncomment this line if you haven't completed the Foursquare API lab")
+from geopy.geocoders import Nominatim # convert an address into latitude and longitude values
+
+import requests # library to handle requests
+from pandas.io.json import json_normalize # tranform JSON file into a pandas dataframe
+
+# Matplotlib and associated plotting modules
+import matplotlib.cm as cm
+import matplotlib.colors as colors
+
+# import k-means from clustering stage
+from sklearn.cluster import KMeans
+
+get_ipython().system("conda install -c conda-forge folium=0.5.0 --yes # uncomment this line if you haven't completed the Foursquare API lab")
+import folium # map rendering library
+
+print('Libraries imported.')
+
+
+# ### Create Map of Toronto with postal code labels
+
+# In[15]:
+
+
+#get coordinates of Toronto
+address = 'Toronto, Ontario, Canada'
+
+geolocator = Nominatim(user_agent="tr_explorer")
+location = geolocator.geocode(address)
+latitude = location.latitude
+longitude = location.longitude
+print('The geograpical coordinate of Toronto are {}, {}.'.format(latitude, longitude))
+
+
+# In[16]:
+
+
+# create map of Toronto using latitude and longitude values
+map_toronto = folium.Map(location=[latitude, longitude], zoom_start=11)
+
+# add markers to map labeled with neighborhoods, borough and postal code
+for lat, lng, postal_code, borough, neighborhood in zip(df3['Latitude'], df3['Longitude'], df3['Postal Code'], df3['Borough'], df3['Neighborhood']):
+    label = '{}; {} {}'.format(neighborhood, borough, postal_code)
+    label = folium.Popup(label, parse_html=True)
+    folium.CircleMarker(
+        [lat, lng],
+        radius=5,
+        popup=label,
+        color='blue',
+        fill=True,
+        fill_color='#3186cc',
+        fill_opacity=0.7,
+        parse_html=False).add_to(map_toronto)  
+    
+map_toronto
+
+
+# ### Get nearby venue info from foursquare api
+
+# In[17]:
+
+
+#define foursquare credentials and version
+CLIENT_ID = 'RXVHM2ZIYQHFZZ3TVGTQ52QGEXISV5ZEZSMADZHMIX3Y3BMF' # your Foursquare ID
+CLIENT_SECRET = 'AE5KYN5BA2NK2R5OHBBYBJEKBPZAZX2KSJRGB23XKHXTG2IX' # your Foursquare Secret
+VERSION = '20180605'
+
+print('Your credentails:')
+print('CLIENT_ID: ' + CLIENT_ID)
+print('CLIENT_SECRET:' + CLIENT_SECRET)
+
+
+# In[18]:
+
+
+# function that extracts the category of the venue from foursquare API for each postal code
+LIMIT = 100
+
+def getNearbyVenues(names, latitudes, longitudes, radius=500):
+    
+    venues_list=[]
+    for name, lat, lng in zip(names, latitudes, longitudes):
+        print(name)
+            
+        # create the API request URL
+        url = 'https://api.foursquare.com/v2/venues/explore?&client_id={}&client_secret={}&v={}&ll={},{}&radius={}&limit={}'.format(CLIENT_ID, CLIENT_SECRET, VERSION, lat, lng, radius, LIMIT)
+            
+        # make the GET request
+        results = requests.get(url).json()['response']['groups'][0]['items']
+        
+        # return only relevant information for each nearby venue
+        venues_list.append([(
+            name, 
+            lat, 
+            lng, 
+            v['venue']['name'], 
+            v['venue']['location']['lat'], 
+            v['venue']['location']['lng'],  
+            v['venue']['categories'][0]['name']) for v in results])
+
+    nearby_venues = pd.DataFrame([item for venue_list in venues_list for item in venue_list])
+    nearby_venues.columns = ['Postal Code', 
+                  'Postal Code Latitude', 
+                  'Postal Code Longitude', 
+                  'Venue', 
+                  'Venue Latitude', 
+                  'Venue Longitude', 
+                  'Venue Category']
+    
+    return(nearby_venues)
+
+
+# In[19]:
+
+
+toronto_venues = getNearbyVenues(names=df3['Postal Code'],
+                                 latitudes=df3['Latitude'],
+                                 longitudes=df3['Longitude']
+                                  )
+
+
+# In[20]:
+
+
+#check size of dataframe
+print(toronto_venues.shape)
+toronto_venues.head()
+
+
+# ### Group by postal codes to see if any postal codes should be dropped
+
+# In[21]:
+
+
+#make new df to analyze postal codes and decide if any should be dropped
+df_vcount = toronto_venues.groupby('Postal Code').count()
+df_vcount
+
+
+# #### We can see many postal codes have very few venues nearby, so lets drop some of these
+
+# In[22]:
+
+
+# Get names of indexes for which column Venue has more less than 12 venues nearby
+indexNames = df_vcount[ df_vcount['Venue'] < 12 ].index
+# Delete these row indexes from dataFrame
+df_vcount.drop(indexNames , inplace=True)
+print(df_vcount.shape)
+df_vcount
+
+
+# In[23]:
+
+
+# drop rows from toronto_venue that have postal codes with less than 8 venues nearby
+keys = list(df_vcount.index.values)
+df = toronto_venues[toronto_venues['Postal Code'].isin(keys)]
+df.shape
+
+
+# In[24]:
+
+
+df.head()
+
+
+# ### Analyze each neighborhood
+
+# In[25]:
+
+
+# one hot encoding
+df_onehot = pd.get_dummies(df[['Venue Category']], prefix="", prefix_sep="")
+
+# add neighborhood column back to dataframe
+df_onehot['Postal Code'] = df['Postal Code'] 
+
+# move neighborhood column to the first column
+fixed_columns = [df_onehot.columns[-1]] + list(df_onehot.columns[:-1])
+df_onehot = df_onehot[fixed_columns]
+
+df_onehot.head()
+
+
+# ### group rows by neighborhood and by taking the mean of the frequency of occurrence of each category
+
+# In[26]:
+
+
+df_grouped = df_onehot.groupby('Postal Code').mean().reset_index()
+print(df_grouped.shape)
+df_grouped.head()
+
+
+# ### sort venues by most common for each postal code to better understand dataset
+
+# In[27]:
+
+
+num_top_venues = 5
+
+for code in df_grouped['Postal Code']:
+    print("----"+code+"----")
+    temp = df_grouped[df_grouped['Postal Code'] == code].T.reset_index()
+    temp.columns = ['venue','freq']
+    temp = temp.iloc[1:]
+    temp['freq'] = temp['freq'].astype(float)
+    temp = temp.round({'freq': 2})
+    print(temp.sort_values('freq', ascending=False).reset_index(drop=True).head(num_top_venues))
+    print('\n')
+
+
+# In[28]:
+
+
+def return_most_common_venues(row, num_top_venues):
+    row_categories = row.iloc[1:]
+    row_categories_sorted = row_categories.sort_values(ascending=False)
+    
+    return row_categories_sorted.index.values[0:num_top_venues]
+
+
+# In[32]:
+
+
+num_top_venues = 10
+
+indicators = ['st', 'nd', 'rd']
+
+# create columns according to number of top venues
+columns = ['Postal Code']
+for ind in np.arange(num_top_venues):
+    try:
+        columns.append('{}{} Most Common Venue'.format(ind+1, indicators[ind]))
+    except:
+        columns.append('{}th Most Common Venue'.format(ind+1))
+
+
+# In[35]:
+
+
+postalcodes_venues_sorted = pd.DataFrame(columns=columns)
+postalcodes_venues_sorted['Postal Code'] = df_grouped['Postal Code']
+
+for ind in np.arange(df_grouped.shape[0]):
+    postalcodes_venues_sorted.iloc[ind, 1:] = return_most_common_venues(df_grouped.iloc[ind, :], num_top_venues)
+
+postalcodes_venues_sorted.head()
+
+
+# ### Cluster Postal codes using K-means
+
+# In[37]:
+
+
+kclusters = 6
+
+df_grouped_clustering = df_grouped.drop('Postal Code', 1)
+
+# run k-means clustering
+kmeans = KMeans(n_clusters=kclusters, random_state=0).fit(df_grouped_clustering)
+
+# check cluster labels generated for each row in the dataframe
+kmeans.labels_[0:10] 
+
+
+# ### Create new dataframe that includes the clusters as well as the top 10 venues for each Postal Code.
+
+# In[40]:
+
+
+# add clustering labels
+postalcodes_venues_sorted.insert(0, 'Cluster Labels', kmeans.labels_)
+
+df_merged = df
+
+# merge toronto_grouped with toronto_data to add latitude/longitude for each postal code
+df_merged = df_merged.join(postalcodes_venues_sorted.set_index('Postal Code'), on='Postal Code')
+
+df_merged.head() # check the last columns!
+
+
+# ### Visualize Clusters
+
+# In[42]:
+
+
+# create map
+map_clusters = folium.Map(location=[latitude, longitude], zoom_start=11)
+
+# set color scheme for the clusters
+x = np.arange(kclusters)
+ys = [i + x + (i*x)**2 for i in range(kclusters)]
+colors_array = cm.rainbow(np.linspace(0, 1, len(ys)))
+rainbow = [colors.rgb2hex(i) for i in colors_array]
+
+# add markers to the map
+markers_colors = []
+for lat, lon, poi, cluster in zip(df_merged['Postal Code Latitude'], df_merged['Postal Code Longitude'], df_merged['Postal Code'], df_merged['Cluster Labels']):
+    label = folium.Popup(str(poi) + ' Cluster ' + str(cluster), parse_html=True)
+    folium.CircleMarker(
+        [lat, lon],
+        radius=5,
+        popup=label,
+        color=rainbow[cluster-1],
+        fill=True,
+        fill_color=rainbow[cluster-1],
+        fill_opacity=0.7).add_to(map_clusters)
+       
+map_clusters
+
